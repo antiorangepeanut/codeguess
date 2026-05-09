@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Genesis Code</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Lato:wght@300;400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <h1 class="title">CodeGuess</h1>
+
+    <div class="container">
+        
+        <div id="screen-menu">
+            <button class="btn" onclick="hostGame()">Host New Game</button>
+            <div class="divider">✦ OR ✦</div>
+            <input type="tel" id="join-id" placeholder="Enter Cosmos ID" maxlength="5">
+            <button class="btn" onclick="joinGame()">Join Game</button>
+        </div>
+
+        <div id="screen-lobby" class="hidden">
+            <h3>Awaiting Connection</h3>
+            <p class="info-text">Share this ID with your opponent:</p>
+            
+            <div class="id-box" onclick="copyId()">
+                <span id="my-peer-id">...</span>
+            </div>
+            <p class="small-text">(Click to Copy)</p>
+            
+            <div id="lobby-status" class="status-text">Initializing Void...</div>
+            <button class="btn btn-cancel" onclick="location.reload()">Cancel</button>
+        </div>
+
+        <div id="screen-setup" class="hidden">
+            <h3>Defense Sequence</h3>
+            
+            <div id="host-controls" class="hidden host-box">
+                <p class="timer-label">Time Dilation: <span id="timer-val">30</span>s</p>
+                <input type="range" id="timer-slider" min="10" max="60" value="30" step="5" oninput="document.getElementById('timer-val').innerText = this.value">
+            </div>
+
+            <p class="info-text">Set your 4-digit Code:</p>
+            <input type="tel" id="secret-input" maxlength="4" placeholder="••••">
+            <button class="btn" id="lock-btn" onclick="lockSequence()">Lock Sequence</button>
+            <p id="setup-status" class="status-gold"></p>
+        </div>
+
+        <div id="screen-game" class="hidden">
+            <div class="status-bar">
+                <span id="turn-badge">INITIALIZING</span>
+                <span id="timer-badge">30s</span>
+            </div>
+
+            <input type="tel" id="guess-input" maxlength="4" placeholder="ENTER GUESS">
+            <button class="btn" onclick="transmitGuess()">TRANSMIT</button>
+
+            <div class="log-header">
+                <span>SEQUENCE</span>
+                <span>ANALYSIS</span>
+            </div>
+            <div class="history-container" id="game-history">
+                </div>
+        </div>
+
+        <div id="screen-end" class="hidden">
+            <h1 id="end-title">FATE SEALED</h1>
+            <p id="end-msg">...</p>
+            <button class="btn" id="rematch-btn" onclick="requestRematch()">Reset Timeline</button>
+            <p id="rematch-status"></p>
+        </div>
+
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
