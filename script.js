@@ -1,67 +1,113 @@
 // --- LOGIC ---
-let peer, conn, isHost = false;
+let peer, conn, isHost = false, connected = false;
 let turnTime = 30, timeLeft = 0, timerInt;
 let mySecret = "", mySecretSet = false, opSecretSet = false;
 let isMyTurn = false, myRematch = false, opRematch = false;
 
+const ID_PREFIX = "genesis-"; // namespaces our IDs on the shared public PeerJS server
 const el = id => document.getElementById(id);
 const screens = ['menu', 'lobby', 'setup', 'game', 'end'];
+
+// WebRTC needs STUN to find public addresses, and TURN to relay when direct
+// connection is impossible (mobile data / CGNAT / college Wi-Fi). Without TURN,
+// players on different networks often can't connect at all.
+// Get free TURN credentials at https://www.metered.ca/tools/openrelay/ (or any TURN provider)
+// and fill them in below.
+const PEER_CONFIG = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' }
+        // ,{ urls: 'turn:YOUR_TURN_HOST:80', username: 'YOUR_USERNAME', credential: 'YOUR_CREDENTIAL' }
+        // ,{ urls: 'turns:YOUR_TURN_HOST:443?transport=tcp', username: 'YOUR_USERNAME', credential: 'YOUR_CREDENTIAL' }
+    ]
+};
 
 function showScreen(name) {
     screens.forEach(s => el('screen-'+s).classList.add('hidden'));
     el('screen-'+name).classList.remove('hidden');
 }
 
-// --- PEERJS ---
-function initPeer(customId) {
-    // Random 5-digit ID to prevent collisions
-    const id = customId || Math.floor(10000 + Math.random() * 90000).toString();
-    peer = new Peer(id);
+function failAndReset(msg) {
+    alert(msg);
+    location.reload();
+}
 
-    peer.on('open', (id) => {
-        el('my-peer-id').innerText = id;
-        if(!isHost) {
-            const hostId = el('join-id').value.trim();
-            if(!hostId) return alert("ID Required");
-            el('lobby-status').innerText = "Connecting to " + hostId + "...";
-            conn = peer.connect(hostId);
+// --- PEERJS ---
+function initPeer(shortId, hostTarget) {
+    const code = shortId || Math.floor(10000 + Math.random() * 90000).toString();
+    const fullId = (isHost ? ID_PREFIX : ID_PREFIX + "p2-") + code;
+    peer = new Peer(fullId, { config: PEER_CONFIG, debug: 1 });
+
+    peer.on('open', () => {
+        el('my-peer-id').innerText = code; // show only the 5 digits
+        if (!isHost) {
+            el('lobby-status').innerText = "Connecting to " + hostTarget + "...";
+            conn = peer.connect(ID_PREFIX + hostTarget, { reliable: true });
             setupConn();
+            // If nothing happens in 15s, it's almost always a NAT/firewall problem (needs TURN)
+            setTimeout(() => {
+                if (!connected) failAndReset("Could not connect to host. Check the ID, or the network is blocking direct connections (a TURN server is needed).");
+            }, 15000);
+        } else {
+            el('lobby-status').innerText = "Waiting for opponent...";
         }
     });
 
     peer.on('connection', (c) => {
-        if(isHost) { conn = c; setupConn(); }
+        if (!isHost) return;
+        if (conn && conn.open) { c.close(); return; } // only one opponent
+        conn = c;
+        setupConn();
     });
 
+    // Signaling server drops idle peers; reconnect so the host stays joinable
+    peer.on('disconnected', () => { if (!peer.destroyed) peer.reconnect(); });
+
     peer.on('error', (err) => {
-        if(err.type === 'unavailable-id') initPeer(); 
-        else alert("Error: " + err.type);
+        if (err.type === 'unavailable-id') {
+            peer.destroy();
+            initPeer(null, hostTarget); // new random ID
+        } else if (err.type === 'peer-unavailable') {
+            failAndReset("No host found with that ID. Check the code and make sure the host is still on the waiting screen.");
+        } else {
+            failAndReset("Connection error: " + err.type);
+        }
     });
 }
 
 function setupConn() {
     conn.on('open', () => {
+        connected = true;
         showScreen('setup');
-        if(isHost) el('host-controls').classList.remove('hidden');
+        if (isHost) el('host-controls').classList.remove('hidden');
     });
     conn.on('data', handleData);
     conn.on('close', () => { alert("Connection Lost"); location.reload(); });
+    conn.on('error', (e) => { alert("Connection error: " + e); location.reload(); });
 }
 
 function hostGame() { isHost = true; showScreen('lobby'); initPeer(); }
-function joinGame() { isHost = false; showScreen('lobby'); initPeer("p2_" + Math.floor(10000+Math.random()*90000)); }
+
+function joinGame() {
+    const hostId = el('join-id').value.trim();
+    if (hostId.length !== 5) return alert("Enter the 5-digit ID");
+    isHost = false;
+    showScreen('lobby');
+    initPeer(null, hostId);
+}
 
 // --- GAMEPLAY ---
 function lockSequence() {
     const val = el('secret-input').value;
     if(val.length !== 4) return alert("4 Digits Required");
     mySecret = val; mySecretSet = true;
-    
+
     el('secret-input').disabled = true;
     el('lock-btn').disabled = true;
     el('lock-btn').innerText = "LOCKED";
     el('setup-status').innerText = "Awaiting Opponent...";
-    
+
     if(isHost) turnTime = parseInt(el('timer-slider').value);
     conn.send({ type: 'READY' });
     checkStart();
@@ -91,7 +137,7 @@ function startTurn(mine) {
         el('guess-input').disabled = false;
         el('guess-input').value = '';
         el('guess-input').focus();
-        
+
         timerInt = setInterval(() => {
             timeLeft--;
             updateTimer();
@@ -112,6 +158,7 @@ function startTurn(mine) {
 function updateTimer() { el('timer-badge').innerText = timeLeft + "s"; }
 
 function transmitGuess() {
+    if(!isMyTurn) return;
     const val = el('guess-input').value;
     if(val.length !== 4) return;
     clearInterval(timerInt);
@@ -128,7 +175,7 @@ function handleData(d) {
         case 'START':
             turnTime = d.time; startGame();
             break;
-        case 'GUESS':
+        case 'GUESS': {
             const res = analyze(mySecret, d.val);
             if(res.place === 4) {
                 conn.send({ type: 'WIN', val: d.val });
@@ -139,6 +186,7 @@ function handleData(d) {
                 startTurn(true);
             }
             break;
+        }
         case 'RES':
             addLog(d.val, d.res.num, d.res.place, false, false);
             startTurn(false);
@@ -164,26 +212,13 @@ function handleData(d) {
 
 // --- ANALYSIS LOGIC ---
 function analyze(secret, guess) {
-    let s = secret.split(''), g = guess.split('');
     let place = 0;
-    
-    // 1. Exact Matches (Correct Place)
+    for(let i=0; i<4; i++) if(secret[i] === guess[i]) place++;
+
+    let s2 = secret.split(''), num = 0;
     for(let i=0; i<4; i++) {
-        if(s[i] === g[i]) {
-            place++;
-            s[i] = null; g[i] = null; // Mark as used
-        }
-    }
-    
-    // 2. Total Number Matches (Including Place)
-    let s2 = secret.split(''), g2 = guess.split('');
-    let num = 0;
-    for(let i=0; i<4; i++) {
-        let idx = s2.indexOf(g2[i]);
-        if(idx !== -1) {
-            num++;
-            s2[idx] = null;
-        }
+        const idx = s2.indexOf(guess[i]);
+        if(idx !== -1) { num++; s2[idx] = null; }
     }
     return { num, place };
 }
@@ -191,7 +226,7 @@ function analyze(secret, guess) {
 function addLog(guess, num, place, isMsg, isOpp) {
     const div = document.createElement('div');
     div.className = 'log-entry';
-    
+
     if(isMsg) {
         div.innerHTML = `<span style="width:100%; text-align:center; color:#666;">${guess}</span>`;
     } else {
@@ -223,8 +258,9 @@ function requestRematch() {
     checkRematch();
 }
 
+// Only the host triggers the reset, so both sides never reset twice
 function checkRematch() {
-    if(myRematch && opRematch) { conn.send({ type: 'REMATCH_GO' }); resetGame(); }
+    if(isHost && myRematch && opRematch) { conn.send({ type: 'REMATCH_GO' }); resetGame(); }
 }
 
 function resetGame() {
@@ -239,8 +275,9 @@ function resetGame() {
 }
 
 function copyId() {
-    navigator.clipboard.writeText(el('my-peer-id').innerText);
-    alert("ID Copied");
+    const text = el('my-peer-id').innerText;
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => alert("ID Copied"), () => alert("ID: " + text));
+    else alert("ID: " + text);
 }
 
 ['secret-input', 'guess-input', 'join-id'].forEach(id => {
