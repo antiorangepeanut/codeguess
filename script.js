@@ -8,20 +8,44 @@ const ID_PREFIX = "genesis-"; // namespaces our IDs on the shared public PeerJS 
 const el = id => document.getElementById(id);
 const screens = ['menu', 'lobby', 'setup', 'game', 'end'];
 
-// WebRTC needs STUN to find public addresses, and TURN to relay when direct
-// connection is impossible (mobile data / CGNAT / college Wi-Fi). Without TURN,
-// players on different networks often can't connect at all.
-// Get free TURN credentials at https://www.metered.ca/tools/openrelay/ (or any TURN provider)
-// and fill them in below.
-const PEER_CONFIG = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:global.stun.twilio.com:3478' }
-        // ,{ urls: 'turn:YOUR_TURN_HOST:80', username: 'YOUR_USERNAME', credential: 'YOUR_CREDENTIAL' }
-        // ,{ urls: 'turns:YOUR_TURN_HOST:443?transport=tcp', username: 'YOUR_USERNAME', credential: 'YOUR_CREDENTIAL' }
-    ]
-};
+// ================== RELAY (TURN) SETUP ==================
+// Phones on 5G/mobile data sit behind carrier-grade NAT, so direct peer-to-peer
+// fails ("Negotiation of connection failed"). A TURN server relays the traffic.
+const METERED_APP = "";
+const METERED_API_KEY = "";
+
+// Static TURN credentials from the Metered dashboard
+const EXTRA_TURN = [
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    { urls: 'turn:global.relay.metered.ca:80', username: '9644acacf16f76d3e1dd488b', credential: '9kmWJ2Fxg48hQbZK' },
+    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: '9644acacf16f76d3e1dd488b', credential: '9kmWJ2Fxg48hQbZK' },
+    { urls: 'turn:global.relay.metered.ca:443', username: '9644acacf16f76d3e1dd488b', credential: '9kmWJ2Fxg48hQbZK' },
+    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: '9644acacf16f76d3e1dd488b', credential: '9kmWJ2Fxg48hQbZK' }
+];
+
+const BASE_STUN = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' }
+];
+
+async function getIceServers() {
+    let servers = BASE_STUN.slice();
+    if (METERED_APP && METERED_API_KEY) {
+        try {
+            const r = await fetch(`https://${METERED_APP}.metered.live/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`);
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            servers = servers.concat(await r.json());
+        } catch (e) {
+            console.warn("Could not fetch TURN credentials:", e);
+        }
+    }
+    servers = servers.concat(EXTRA_TURN);
+    if (servers.length === BASE_STUN.length) {
+        console.warn("No TURN server configured: mobile-to-mobile play will usually fail.");
+    }
+    return servers;
+}
 
 function showScreen(name) {
     screens.forEach(s => el('screen-'+s).classList.add('hidden'));
@@ -34,10 +58,12 @@ function failAndReset(msg) {
 }
 
 // --- PEERJS ---
-function initPeer(shortId, hostTarget) {
+async function initPeer(shortId, hostTarget) {
+    el('lobby-status').innerText = "Preparing secure relay...";
+    const iceServers = await getIceServers();
     const code = shortId || Math.floor(10000 + Math.random() * 90000).toString();
     const fullId = (isHost ? ID_PREFIX : ID_PREFIX + "p2-") + code;
-    peer = new Peer(fullId, { config: PEER_CONFIG, debug: 1 });
+    peer = new Peer(fullId, { config: { iceServers, sdpSemantics: 'unified-plan' }, debug: 2 });
 
     peer.on('open', () => {
         el('my-peer-id').innerText = code; // show only the 5 digits
@@ -45,10 +71,10 @@ function initPeer(shortId, hostTarget) {
             el('lobby-status').innerText = "Connecting to " + hostTarget + "...";
             conn = peer.connect(ID_PREFIX + hostTarget, { reliable: true });
             setupConn();
-            // If nothing happens in 15s, it's almost always a NAT/firewall problem (needs TURN)
+            // If nothing happens in 30s, it's almost always a NAT/firewall problem
             setTimeout(() => {
                 if (!connected) failAndReset("Could not connect to host. Check the ID, or the network is blocking direct connections (a TURN server is needed).");
-            }, 15000);
+            }, 30000);
         } else {
             el('lobby-status').innerText = "Waiting for opponent...";
         }
